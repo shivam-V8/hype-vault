@@ -19,7 +19,7 @@ contract RiskManager is Ownable {
     event ExecutorUpdated(address executor);
     event AssetsUpdated(uint256 newAssets);
 
-    constructor(address_vault) {
+    constructor(address _vault) Ownable(msg.sender) {
         vault = _vault;
         maxLeverage = 5e18;
         maxDrawdownBPS = 2000;
@@ -49,7 +49,7 @@ contract RiskManager is Ownable {
 
             if(drawdownBPS > maxDrawdownBPS) {
                 tradingPaused = true;
-                emit TradingPaused = true;
+                emit TradingPaused(true);
             }
         }
         emit AssetsUpdated(newAssets);

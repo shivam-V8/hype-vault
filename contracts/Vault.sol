@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20
+pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -15,11 +15,11 @@ contract Vault is Ownable {
     event Deposit(address indexed user, uint256 assets, uint256 shares);
     event Withdraw(address indexed user, uint256 assets, uint256 shares);
 
-    constructor(address _asset) {
+    constructor(address _asset) Ownable(msg.sender) {
         asset = IERC20(_asset);
     }
 
-    function Deposit(uint256 amount) external {
+    function deposit(uint256 amount) external {
         require(amount > 0, "amount = 0");
 
         uint256 mintedShares = totalShares == 0 ? amount : (amount * totalShares) / totalAssets;
@@ -33,7 +33,7 @@ contract Vault is Ownable {
         emit Deposit(msg.sender, amount, mintedShares);
     }
 
-    function Withdraw(uint256 shareAmount) external {
+    function withdraw(uint256 shareAmount) external {
         require(shareAmount > 0, "shares = 0");
         require(shares[msg.sender] >= shareAmount, "insufficient shares");
 
