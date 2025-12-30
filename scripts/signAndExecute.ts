@@ -9,7 +9,7 @@ import {
   const RPC = "https://rpc.hyperliquid-testnet.xyz/evm";
   const CHAIN_ID = 998;
   
-  const EXECUTOR = "0x8b15CAC403b30513A2141A633186731b56DFF9bA";
+  const EXECUTOR = "0xbd4130e378804FB86D947Bb6f65463308B800FdC";
   const BOT_PRIVATE_KEY = process.env.BOT_SIGNER_PRIVATE_KEY!;
   
   const MARKET = "0x0000000000000000000000000000000000000001";
@@ -29,7 +29,6 @@ import {
     const bot = new Wallet(BOT_PRIVATE_KEY, provider);
     console.log("Bot signer:", bot.address);
   
-    // 🔐 EXACT MATCH TO SOLIDITY _hashIntent
     const intentHash = solidityPackedKeccak256(
       [
         "address",
@@ -53,8 +52,7 @@ import {
       ]
     );
   
-    // 🚨 THIS IS THE KEY LINE
-    // signMessage() already applies the Ethereum prefix
+
     const signature = await bot.signMessage(
       Buffer.from(intentHash.slice(2), "hex")
     );
@@ -83,7 +81,7 @@ import {
     console.log("Tx sent:", tx.hash);
     await tx.wait();
   
-    console.log("✅ Signed intent executed successfully");
+    console.log("Signed intent executed successfully");
   }
   
   main().catch(console.error);

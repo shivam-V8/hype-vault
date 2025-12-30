@@ -107,16 +107,22 @@ contract Executor is Ownable {
 
         riskManager.validateTrade(sizeUsd);
 
-        (bool success, uint256 filledSize) =
-            adapter.executePerpTrade(
-                market,
-                isLong,
-                sizeUsd,
-                maxSlippageBps
-            );
-
-        require(success, "execution failed");
-
         emit IntentExecuted(nonce);
+    }
+
+    function settleTrade(
+        uint256 nonce,
+        int256 pnlUsd,
+        uint256 newAssets,
+        uint256 newExposureUsd
+        ) external {
+        require(msg.sender == signer, "only bot");
+
+        adapter.settleTrade(
+            nonce,
+            pnlUsd,
+            newAssets,
+            newExposureUsd
+        );
     }
 }

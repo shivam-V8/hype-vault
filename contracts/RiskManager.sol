@@ -9,7 +9,7 @@ contract RiskManager is Ownable {
     uint256 public maxPositionBPS;
 
     bool public tradingPaused;
-    address public executor;
+    address public settlementAdapter;
     address public vault;
 
     uint256 public peakAssets;
@@ -18,7 +18,7 @@ contract RiskManager is Ownable {
     uint256 public currentExposureUsd;
 
     event TradingPaused(bool paused);
-    event ExecutorUpdated(address executor);
+    event AdapterUpdated(address adapter);
     event AssetsUpdated(uint256 newAssets);
 
     constructor(address _vault) Ownable(msg.sender) {
@@ -30,10 +30,16 @@ contract RiskManager is Ownable {
         tradingPaused = false;
     }
 
-    modifier onlyExecutor() {
-        require(msg.sender == executor, "not executor");
+    modifier onlyAdapter() {
+        require(msg.sender == settlementAdapter, "not adapter");
         _;
     }
+
+
+        function setSettlementAdapter(address _adapter) external onlyOwner {
+            settlementAdapter = _adapter;
+            emit AdapterUpdated(_adapter);
+        }
 
         function validateTrade(uint256 tradeSizeUsd) external view {
             require(!tradingPaused, "trading paused");
@@ -49,12 +55,7 @@ contract RiskManager is Ownable {
         }
 
 
-    function setExecutor(address _executor) external onlyOwner {
-        executor = _executor;
-        emit ExecutorUpdated(_executor);
-    }
-
-    function updatedAssets(uint256 newAssets, uint256 newExposureUsd) external onlyExecutor {
+    function updatedAssets(uint256 newAssets, uint256 newExposureUsd) external onlyAdapter {
         require(!tradingPaused, "trading paused");
 
         currentAssets = newAssets;
