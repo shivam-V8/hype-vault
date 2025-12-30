@@ -41,9 +41,6 @@ contract Executor is Ownable {
         adapter = IHyperliquidAdapter(_adapter);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            ADMIN CONTROLS
-    //////////////////////////////////////////////////////////////*/
 
     function setSigner(address _signer) external onlyOwner {
         require(_signer != address(0), "invalid signer");
@@ -57,10 +54,6 @@ contract Executor is Ownable {
         emit AdapterUpdated(_adapter);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                          INTERNAL HASHING
-    //////////////////////////////////////////////////////////////*/
-
     function _hashIntent(
         address market,
         bool isLong,
@@ -71,21 +64,17 @@ contract Executor is Ownable {
     ) internal view returns (bytes32) {
         return keccak256(
             abi.encodePacked(
-                address(this),   // bind to this executor
+                address(this),
                 market,
                 isLong,
                 sizeUsd,
                 maxSlippageBps,
                 nonce,
                 expiry,
-                block.chainid    // prevent cross-chain replay
+                block.chainid
             )
         );
     }
-
-    /*//////////////////////////////////////////////////////////////
-                          TRADE EXECUTION
-    //////////////////////////////////////////////////////////////*/
 
     function executeTrade(
         address market,
@@ -116,8 +105,7 @@ contract Executor is Ownable {
         // burn nonce BEFORE execution (reentrancy safe)
         usedNonces[nonce] = true;
 
-        // --- OPTIONAL FUTURE CHECK ---
-        // riskManager.validateTrade(market, sizeUsd, isLong);
+        riskManager.validateTrade(sizeUsd);
 
         (bool success, uint256 filledSize) =
             adapter.executePerpTrade(

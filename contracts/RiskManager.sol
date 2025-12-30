@@ -15,6 +15,8 @@ contract RiskManager is Ownable {
     uint256 public peakAssets;
     uint256 public currentAssets;
 
+    uint256 public currentExposureUsd;
+
     event TradingPaused(bool paused);
     event ExecutorUpdated(address executor);
     event AssetsUpdated(uint256 newAssets);
@@ -33,15 +35,30 @@ contract RiskManager is Ownable {
         _;
     }
 
+        function validateTrade(uint256 tradeSizeUsd) external view {
+            require(!tradingPaused, "trading paused");
+            // Max position size relative to assets
+            // maxPositionBPS = e.g. 3000 = 30%
+            
+            uint256 maxPositionUsd = (currentAssets * maxPositionBPS) / 10_000;
+            
+            require(tradeSizeUsd <= maxPositionUsd, "position too large");
+            uint256 maxExposureUsd = (currentAssets * maxLeverage) / 1e18;
+            
+            require(currentExposureUsd + tradeSizeUsd <= maxExposureUsd, "leverage exceeded");
+        }
+
+
     function setExecutor(address _executor) external onlyOwner {
         executor = _executor;
         emit ExecutorUpdated(_executor);
     }
 
-    function updatedAssets(uint256 newAssets) external onlyExecutor {
+    function updatedAssets(uint256 newAssets, uint256 newExposureUsd) external onlyExecutor {
         require(!tradingPaused, "trading paused");
 
         currentAssets = newAssets;
+        currentExposureUsd = newExposureUsd;
         if(newAssets > peakAssets) {
             peakAssets = newAssets;
         } else {

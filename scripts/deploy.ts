@@ -1,4 +1,4 @@
-import { JsonRpcProvider, Wallet, ContractFactory } from "ethers";
+import { JsonRpcProvider, Wallet, ContractFactory, Contract } from "ethers";
 import fs from "fs";
 import path from "path";
 import "dotenv/config";
@@ -47,6 +47,12 @@ async function main() {
   );
   const riskManager = await RMFactory.deploy(await vault.getAddress());
   await riskManager.waitForDeployment();
+  const riskManagerContract = new Contract(
+    await riskManager.getAddress(),
+    RMArt.abi,
+    wallet
+  );
+  
   console.log("RiskManager:", await riskManager.getAddress());
 
   const AdapterArt = loadArtifact("HyperliquidAdapter");
@@ -72,6 +78,9 @@ async function main() {
   );
   await executor.waitForDeployment();
   console.log("Executor:", await executor.getAddress());
+
+  await riskManagerContract.setExecutor(await executor.getAddress());
+  console.log("RiskManager executor set to:", await executor.getAddress());
 
   console.log("DEPLOYMENT COMPLETE");
 }
