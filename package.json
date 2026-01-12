@@ -26,7 +26,10 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "@nktkas/hyperliquid": "^0.30.2",
     "@openzeppelin/contracts": "^5.4.0",
-    "dotenv": "^17.2.3"
+    "better-sqlite3": "^12.5.0",
+    "dotenv": "^17.2.3",
+    "node-fetch": "^3.3.2"
   }
 }
