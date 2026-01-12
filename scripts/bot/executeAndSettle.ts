@@ -23,6 +23,7 @@ const HYPERLIQUID_TRADER =
 const ORDER_SIZE_USD = Number(process.env.HYPER_ORDER_SIZE_USD ?? 20);
 const ORDER_MAX_SLIPPAGE_BPS = Number(process.env.HYPER_ORDER_SLIPPAGE_BPS ?? 75);
 
+const TARGET_LEVERAGE = Number(process.env.TARGET_LEVERAGE ?? 3); // default 2x
 
 
 const toNumber = (v: any): number =>
@@ -36,8 +37,9 @@ const extractAccountValue = (state: any): number =>
   );
 
 const extractExposure = (state: any): number =>
-  Math.floor(
-    Math.abs(
+  Math.abs(
+    toNumber(
+      state?.crossMarginSummary?.totalNtlPos ??
       (state.assetPositions ?? []).reduce(
         (sum: number, p: any) =>
           sum + toNumber(p?.position?.positionValue ?? 0),
@@ -45,6 +47,32 @@ const extractExposure = (state: any): number =>
       )
     )
   );
+
+/**
+ * Compute venue-safe order size to prevent margin rejections.
+ * Formula: currentExposure + newOrderSize ≤ equity × targetLeverage
+ */
+function computeSafeOrderSizeUsd(params: {
+  requestedSizeUsd: number;
+  equityUsd: number;
+  currentExposureUsd: number;
+  targetLeverage: number;
+}): number {
+  const { requestedSizeUsd, equityUsd, currentExposureUsd, targetLeverage } = params;
+
+  const maxAllowedExposure = equityUsd * targetLeverage;
+  const remainingCapacity = Math.max(
+    maxAllowedExposure - currentExposureUsd,
+    0
+  );
+
+  const safeSizeUsd = Math.min(requestedSizeUsd, remainingCapacity);
+
+  const maxSingleOrderUsd = equityUsd * 0.25;
+  
+  return Math.min(safeSizeUsd, maxSingleOrderUsd);
+}
+
 
 const executorIface = new Interface([
   "event IntentExecuted(uint256 indexed nonce)",
@@ -70,12 +98,12 @@ async function main() {
     throw new Error("Failed to determine initial account value");
   }
 
-  console.log("🤖 Bot started");
+  console.log("Bot started");
   console.log("Initial assets:", previousAssets);
 
   const pending = loadUnsettled();
   if (pending.length > 0) {
-    console.log("🔁 Recovering pending executions:");
+    console.log("Recovering pending executions:");
     for (const row of pending) {
       console.log(`↪ nonce ${row.nonce} ↔ order ${row.orderId}`);
     }
@@ -100,18 +128,55 @@ async function main() {
         const nonceStr = nonce.toString();
 
         if (isSettled(nonceStr)) {
-          console.log("⏭️ already settled:", nonceStr);
+          console.log("already settled:", nonceStr);
           continue;
         }
 
-        console.log("➡️ Intent detected | nonce:", nonceStr);
+        console.log("Intent detected | nonce:", nonceStr);
+
+
+        const preTradeState = await fetchUserState(trader);
+        const equityUsd = extractAccountValue(preTradeState);
+        const currentExposureUsd = extractExposure(preTradeState);
+
+        console.log("Pre-trade state:", {
+          equity: equityUsd,
+          exposure: currentExposureUsd,
+          leverage: (currentExposureUsd / equityUsd).toFixed(2) + "x",
+          targetLeverage: TARGET_LEVERAGE + "x",
+        });
+
+        const safeSizeUsd = computeSafeOrderSizeUsd({
+          requestedSizeUsd: ORDER_SIZE_USD,
+          equityUsd,
+          currentExposureUsd,
+          targetLeverage: TARGET_LEVERAGE,
+        });
+
+        if (safeSizeUsd < 10) {
+          console.log("Order skipped — insufficient capacity", {
+            equityUsd,
+            currentExposureUsd,
+            safeSizeUsd,
+            reason: "Order would exceed leverage limit or below $10 minimum",
+          });
+          continue;
+        }
+
+        console.log("Venue-safe order size:", {
+          requested: ORDER_SIZE_USD,
+          safe: safeSizeUsd.toFixed(2),
+          utilizationPct: ((safeSizeUsd / ORDER_SIZE_USD) * 100).toFixed(1) + "%",
+        });
+
+       
 
         const { orderId } = await placePerpOrder(
           HYPERLIQUID_API_KEY,
           {
             market: "SOL-PERP",
             isBuy: true,
-            sizeUsd: ORDER_SIZE_USD,
+            sizeUsd: safeSizeUsd,
             maxSlippageBps: ORDER_MAX_SLIPPAGE_BPS,
           }
         );
