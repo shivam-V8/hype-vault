@@ -43,8 +43,6 @@ contract RiskManager is Ownable {
 
         function validateTrade(uint256 tradeSizeUsd) external view {
             require(!tradingPaused, "trading paused");
-            // Max position size relative to assets
-            // maxPositionBPS = e.g. 3000 = 30%
             
             uint256 maxPositionUsd = (currentAssets * maxPositionBPS) / 10_000;
             

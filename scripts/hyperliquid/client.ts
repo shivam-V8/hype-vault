@@ -59,9 +59,11 @@ export async function placePerpOrder(
     market: string;
     isBuy: boolean;
     sizeUsd: number;
-    maxSlippageBps?: number; 
+    maxSlippageBps?: number;
+    orderType?: "Ioc" | "Gtc"; // IOC = immediate-or-cancel, GTC = good-til-cancel
   },
 ): Promise<{ orderId: number }> {
+  const orderType = params.orderType ?? "Gtc"; // Default to GTC for better fill rate
   const coin = params.market.replace("-PERP", "");
   const [assetId, mids, meta] = await Promise.all([
     getPerpAssetId(coin),
@@ -177,7 +179,7 @@ export async function placePerpOrder(
         p: priceStr,
         s: sizeStr,
         r: false,
-        t: { limit: { tif: "Ioc" as const } },
+        t: { limit: { tif: orderType as "Ioc" | "Gtc" } },
       },
     ],
     grouping: "na" as const,
