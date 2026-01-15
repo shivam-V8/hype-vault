@@ -76,11 +76,13 @@ function computeSafeOrderSizeUsd(params: {
 
 function aggregateFillsForOrders(orderIds: number[], fills: any[]): {
   filledSizeUsd: number;
-  realizedPnl: number;
+  tradePnlUsd: number;
+  feesUsd: number;
   fillCount: number;
 } {
   let filledSizeUsd = 0;
-  let realizedPnl = 0;
+  let tradePnlUsd = 0;
+  let feesUsd = 0;
   let fillCount = 0;
 
   const orderIdSet = new Set(orderIds);
@@ -92,15 +94,28 @@ function aggregateFillsForOrders(orderIds: number[], fills: any[]): {
     const sz = Number(fill.sz);
 
     filledSizeUsd += px * sz;
-    realizedPnl += Number(fill.realizedPnl ?? 0);
+    tradePnlUsd += Number(fill.realizedPnl ?? 0);
+    feesUsd += Number(fill.fee ?? 0);
     fillCount++;
   }
 
   return {
     filledSizeUsd,
-    realizedPnl,
+    tradePnlUsd,
+    feesUsd,
     fillCount,
   };
+}
+
+function extractFundingDelta(prevState: any, currState: any): number {
+  const prevFunding = Number(
+    prevState?.assetPositions?.[0]?.position?.cumFunding ?? 0
+  );
+  const currFunding = Number(
+    currState?.assetPositions?.[0]?.position?.cumFunding ?? 0
+  );
+
+  return currFunding - prevFunding;
 }
 
 function hasFillsStabilized(exec: ExecutionRow): boolean {
@@ -120,10 +135,20 @@ async function processExecution(
 ): Promise<void> {
   const allFills = await fetchUserFills(trader);
   
-  const { filledSizeUsd, realizedPnl, fillCount } = aggregateFillsForOrders(
+  const { filledSizeUsd, tradePnlUsd, feesUsd, fillCount } = aggregateFillsForOrders(
     exec.orderIds,
     allFills
   );
+
+  const currentState = await fetchUserState(trader);
+  
+  let fundingUsd = 0;
+  if (exec.prevStateSnapshot) {
+    const prevState = JSON.parse(exec.prevStateSnapshot);
+    fundingUsd = extractFundingDelta(prevState, currentState);
+  }
+
+  const netPnlUsd = tradePnlUsd - fundingUsd - feesUsd;
 
   const previousFilledUsd = exec.filledUsd;
   const fillsChanged = Math.abs(filledSizeUsd - previousFilledUsd) > 0.01;
@@ -133,6 +158,10 @@ async function processExecution(
   
   updateExecution(exec.nonce, {
     filledUsd: filledSizeUsd,
+    tradePnlUsd,
+    fundingUsd,
+    feesUsd,
+    netPnlUsd,
     lastFillCheck,
   });
 
@@ -144,6 +173,10 @@ async function processExecution(
     fillCount,
     status: exec.status,
     fillsChanged,
+    tradePnl: tradePnlUsd.toFixed(2),
+    funding: fundingUsd.toFixed(2),
+    fees: feesUsd.toFixed(2),
+    netPnl: netPnlUsd.toFixed(2),
   });
 
   const remainingUsd = exec.targetUsd - filledSizeUsd;
@@ -221,12 +254,15 @@ async function processExecution(
   }
 
   const exposureUsd = extractExposure(state);
-  const pnlUsd = Math.floor(realizedPnl);
+  const netPnlInt = Math.floor(netPnlUsd);
   const exposureUsdInt = Math.floor(exposureUsd);
 
   console.log("Settlement data:", {
     nonce: exec.nonce,
-    pnl: pnlUsd,
+    tradePnl: tradePnlUsd.toFixed(2),
+    funding: fundingUsd.toFixed(2),
+    fees: feesUsd.toFixed(2),
+    netPnl: netPnlInt,
     assets: newAssets,
     exposure: exposureUsdInt,
     filledUsd: filledSizeUsd.toFixed(2),
@@ -236,7 +272,7 @@ async function processExecution(
     try {
       await executor.settleTrade.estimateGas(
         exec.nonce,
-        pnlUsd,
+        netPnlInt,
         newAssets,
         exposureUsdInt
       );
@@ -247,7 +283,7 @@ async function processExecution(
                           "Unknown error";
       console.error(`Settlement gas estimation failed for nonce ${exec.nonce}:`, revertReason);
       console.error(`   Nonce: ${exec.nonce}`);
-      console.error(`   PnL: ${pnlUsd}`);
+      console.error(`   Net PnL: ${netPnlInt}`);
       console.error(`   Assets: ${newAssets}`);
       console.error(`   Exposure: ${exposureUsdInt}`);
       throw new Error(`Gas estimation failed: ${revertReason}`);
@@ -255,14 +291,14 @@ async function processExecution(
 
     const tx = await executor.settleTrade(
       exec.nonce,
-      pnlUsd,
+      netPnlInt,
       newAssets,
       exposureUsdInt
     );
 
     await tx.wait();
     markSettled(exec.nonce);
-    console.log(`Settled nonce: ${exec.nonce} | PnL: ${pnlUsd} | Assets: ${newAssets}`);
+    console.log(`Settled nonce: ${exec.nonce} | Net PnL: ${netPnlInt} | Assets: ${newAssets}`);
   } catch (error: any) {
     const errorMsg = error.reason || error.data?.message || error.message || "Unknown error";
     console.error(`Settlement failed for nonce ${exec.nonce}:`, errorMsg);
@@ -396,16 +432,17 @@ async function main() {
 
         console.log("Intent detected | nonce:", nonceStr);
 
+        const preTradeState = await fetchUserState(trader);
+        
         saveExecution({
           nonce: nonceStr,
           targetUsd: ORDER_SIZE_USD,
           filledUsd: 0,
           status: "OPEN",
           orderIds: [],
+          prevStateSnapshot: JSON.stringify(preTradeState),
           lastFillCheck: Date.now(),
         });
-
-        const preTradeState = await fetchUserState(trader);
         const equityUsd = extractAccountValue(preTradeState);
         const currentExposureUsd = extractExposure(preTradeState);
 
