@@ -28,7 +28,6 @@ async function main() {
     (await provider.getBalance(wallet.address)).toString()
   );
 
-  // Deploy Vault
   const VaultArt = loadArtifact("Vault");
   const VaultFactory = new ContractFactory(
     VaultArt.abi,
@@ -39,7 +38,6 @@ async function main() {
   await vault.waitForDeployment();
   console.log("Vault:", await vault.getAddress());
 
-  // Deploy RiskManager
   const RMArt = loadArtifact("RiskManager");
   const RMFactory = new ContractFactory(
     RMArt.abi,
@@ -56,7 +54,6 @@ async function main() {
     wallet
   );
 
-  // Deploy Adapter
   const AdapterArt = loadArtifact("HyperliquidAdapter");
   const AdapterFactory = new ContractFactory(
     AdapterArt.abi,
@@ -69,7 +66,6 @@ async function main() {
   await adapter.waitForDeployment();
   console.log("Adapter:", await adapter.getAddress());
 
-  // Deploy Executor
   const ExecArt = loadArtifact("Executor");
   const ExecFactory = new ContractFactory(
     ExecArt.abi,
@@ -84,7 +80,6 @@ async function main() {
   await executor.waitForDeployment();
   console.log("Executor:", await executor.getAddress());
 
-  // RiskManager trusts Adapter
   await riskManagerContract.setSettlementAdapter(
     await adapter.getAddress()
   );
@@ -93,7 +88,26 @@ async function main() {
     await adapter.getAddress()
   );
 
-  console.log("DEPLOYMENT COMPLETE");
+  const adapterContract = new Contract(
+    await adapter.getAddress(),
+    AdapterArt.abi,
+    wallet
+  );
+  await adapterContract.setExecutor(await executor.getAddress());
+  console.log(
+    "Adapter executor set to:",
+    await executor.getAddress()
+  );
+
+  console.log("\n DEPLOYMENT COMPLETE");
+  console.log("\n Configuration Summary:");
+  console.log(`   Vault: ${await vault.getAddress()}`);
+  console.log(`   RiskManager: ${await riskManager.getAddress()}`);
+  console.log(`   Adapter: ${await adapter.getAddress()}`);
+  console.log(`   Executor: ${await executor.getAddress()}`);
+  console.log(`   Bot Signer: ${botSigner}`);
+  console.log("\n Verify configuration:");
+  console.log(`   npm run verify:settlement`);
 }
 
 main().catch((e) => {

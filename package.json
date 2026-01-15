@@ -5,7 +5,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "compile": "hardhat compile",
+    "bot": "tsx scripts/bot/executeAndSettle.ts",
+    "bot:dev": "tsx --watch scripts/bot/executeAndSettle.ts",
+    "bot:test": "tsx scripts/bot/test-partial-fills.ts",
+    "verify:settlement": "tsx scripts/verify/verifySettlement.ts"
   },
   "repository": {
     "type": "git",
@@ -23,6 +28,7 @@
     "debug": "^4.4.3",
     "ethers": "^6.16.0",
     "hardhat": "^3.1.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.9.3"
   },
   "dependencies": {

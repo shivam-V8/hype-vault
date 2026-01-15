@@ -5,9 +5,12 @@ import { placePerpOrder } from "../hyperliquid/client";
 import { fetchUserState, fetchUserFills } from "../hyperliquid/state";
 import {
   saveExecution,
+  updateExecution,
+  getExecution,
   markSettled,
   isSettled,
   loadUnsettled,
+  type ExecutionRow,
 } from "./persistence";
 
 const RPC = process.env.HYPER_EVM_RPC!;
@@ -22,10 +25,12 @@ const HYPERLIQUID_TRADER =
     "").toLowerCase();
 const ORDER_SIZE_USD = Number(process.env.HYPER_ORDER_SIZE_USD ?? 20);
 const ORDER_MAX_SLIPPAGE_BPS = Number(process.env.HYPER_ORDER_SLIPPAGE_BPS ?? 75);
-const ORDER_TYPE = (process.env.HYPER_ORDER_TYPE ?? "Gtc") as "Ioc" | "Gtc"; // GTC = rests on book, IOC = immediate fill only
+const ORDER_TYPE = (process.env.HYPER_ORDER_TYPE ?? "Gtc") as "Ioc" | "Gtc";
+const TARGET_LEVERAGE = Number(process.env.TARGET_LEVERAGE ?? 3);
+const SETTLEMENT_STABILITY_MS = Number(process.env.SETTLEMENT_STABILITY_MS ?? 3000);
+const PARTIAL_FILL_DUST_THRESHOLD = Number(process.env.PARTIAL_FILL_DUST_THRESHOLD ?? 20);
 
-const TARGET_LEVERAGE = Number(process.env.TARGET_LEVERAGE ?? 3); // default 2x
-
+const MARKET_TICKER = process.env.HYPER_MARKET_TICKER ?? "AVAX-PERP";
 
 const toNumber = (v: any): number =>
   typeof v === "string" || typeof v === "number" ? Number(v) : 0;
@@ -38,7 +43,7 @@ const extractAccountValue = (state: any): number =>
   );
 
 const extractExposure = (state: any): number =>
-    Math.abs(
+  Math.abs(
     toNumber(
       state?.crossMarginSummary?.totalNtlPos ??
       (state.assetPositions ?? []).reduce(
@@ -49,10 +54,6 @@ const extractExposure = (state: any): number =>
     )
   );
 
-/**
- * Compute venue-safe order size to prevent margin rejections.
- * Formula: currentExposure + newOrderSize ≤ equity × targetLeverage
- */
 function computeSafeOrderSizeUsd(params: {
   requestedSizeUsd: number;
   equityUsd: number;
@@ -68,18 +69,12 @@ function computeSafeOrderSizeUsd(params: {
   );
 
   const safeSizeUsd = Math.min(requestedSizeUsd, remainingCapacity);
-
   const maxSingleOrderUsd = equityUsd * 0.25;
   
   return Math.min(safeSizeUsd, maxSingleOrderUsd);
 }
 
-
-/**
- * Aggregate fills for a specific orderId to get realized PnL and filled size.
- * This is the CORRECT way to determine what actually happened on venue.
- */
-function aggregateFills(orderId: number, fills: any[]): {
+function aggregateFillsForOrders(orderIds: number[], fills: any[]): {
   filledSizeUsd: number;
   realizedPnl: number;
   fillCount: number;
@@ -88,8 +83,10 @@ function aggregateFills(orderId: number, fills: any[]): {
   let realizedPnl = 0;
   let fillCount = 0;
 
+  const orderIdSet = new Set(orderIds);
+
   for (const fill of fills) {
-    if (fill.oid !== orderId) continue;
+    if (!orderIdSet.has(fill.oid)) continue;
 
     const px = Number(fill.px);
     const sz = Number(fill.sz);
@@ -106,9 +103,172 @@ function aggregateFills(orderId: number, fills: any[]): {
   };
 }
 
+function hasFillsStabilized(exec: ExecutionRow): boolean {
+  const now = Date.now();
+  const timeSinceLastCheck = now - exec.lastFillCheck;
+  return timeSinceLastCheck >= SETTLEMENT_STABILITY_MS;
+}
+
 const executorIface = new Interface([
   "event IntentExecuted(uint256 indexed nonce)",
 ]);
+
+async function processExecution(
+  exec: ExecutionRow,
+  executor: Contract,
+  trader: string
+): Promise<void> {
+  const allFills = await fetchUserFills(trader);
+  
+  const { filledSizeUsd, realizedPnl, fillCount } = aggregateFillsForOrders(
+    exec.orderIds,
+    allFills
+  );
+
+  const previousFilledUsd = exec.filledUsd;
+  const fillsChanged = Math.abs(filledSizeUsd - previousFilledUsd) > 0.01;
+  
+  const now = Date.now();
+  const lastFillCheck = fillsChanged ? now : exec.lastFillCheck;
+  
+  updateExecution(exec.nonce, {
+    filledUsd: filledSizeUsd,
+    lastFillCheck,
+  });
+
+  console.log(`Nonce ${exec.nonce} fill status:`, {
+    targetUsd: exec.targetUsd.toFixed(2),
+    filledUsd: filledSizeUsd.toFixed(2),
+    remainingUsd: (exec.targetUsd - filledSizeUsd).toFixed(2),
+    orderIds: exec.orderIds,
+    fillCount,
+    status: exec.status,
+    fillsChanged,
+  });
+
+  const remainingUsd = exec.targetUsd - filledSizeUsd;
+
+  if (fillsChanged && exec.status === "FILLED") {
+    updateExecution(exec.nonce, { status: "PARTIAL" });
+  }
+
+  if (remainingUsd > PARTIAL_FILL_DUST_THRESHOLD) {
+    if (exec.status !== "PARTIAL" && exec.status !== "OPEN") {
+      updateExecution(exec.nonce, { status: "PARTIAL" });
+    }
+
+    const preTradeState = await fetchUserState(trader);
+    const equityUsd = extractAccountValue(preTradeState);
+    const currentExposureUsd = extractExposure(preTradeState);
+
+    const safeSizeUsd = computeSafeOrderSizeUsd({
+      requestedSizeUsd: remainingUsd,
+      equityUsd,
+      currentExposureUsd,
+      targetLeverage: TARGET_LEVERAGE,
+    });
+
+    if (safeSizeUsd >= 10) {
+      console.log(`Retrying partial fill for nonce ${exec.nonce}:`, {
+        remaining: remainingUsd.toFixed(2),
+        safe: safeSizeUsd.toFixed(2),
+      });
+
+      try {
+        const result = await placePerpOrder(HYPERLIQUID_API_KEY, {
+          market: MARKET_TICKER,
+          isBuy: true,
+          sizeUsd: safeSizeUsd,
+          maxSlippageBps: ORDER_MAX_SLIPPAGE_BPS,
+          orderType: ORDER_TYPE,
+        });
+
+        const newOrderIds = [...exec.orderIds, result.orderId];
+        updateExecution(exec.nonce, {
+          orderIds: newOrderIds,
+          status: "PARTIAL",
+        });
+
+        console.log(`Retry order placed: orderId ${result.orderId} for nonce ${exec.nonce}`);
+      } catch (error: any) {
+        console.error(`Retry order failed for nonce ${exec.nonce}:`, error.message);
+      }
+    } else {
+      console.log(`Retry skipped - insufficient capacity for nonce ${exec.nonce}`);
+    }
+
+    return;
+  }
+
+  if (exec.status !== "FILLED") {
+    updateExecution(exec.nonce, { status: "FILLED" });
+    console.log(`Nonce ${exec.nonce} marked as FILLED`);
+  }
+
+  const execUpdated = getExecution(exec.nonce)!;
+  if (!hasFillsStabilized(execUpdated)) {
+    console.log(`Nonce ${exec.nonce} fills not yet stable, waiting...`);
+    return;
+  }
+
+  console.log(`Settling nonce ${exec.nonce}...`);
+
+  const state = await fetchUserState(trader);
+  const newAssets = Math.floor(extractAccountValue(state));
+  if (!Number.isFinite(newAssets)) {
+    console.warn(`Invalid account value for nonce ${exec.nonce}, skipping settlement`);
+    return;
+  }
+
+  const exposureUsd = extractExposure(state);
+  const pnlUsd = Math.floor(realizedPnl);
+  const exposureUsdInt = Math.floor(exposureUsd);
+
+  console.log("Settlement data:", {
+    nonce: exec.nonce,
+    pnl: pnlUsd,
+    assets: newAssets,
+    exposure: exposureUsdInt,
+    filledUsd: filledSizeUsd.toFixed(2),
+  });
+
+  try {
+    try {
+      await executor.settleTrade.estimateGas(
+        exec.nonce,
+        pnlUsd,
+        newAssets,
+        exposureUsdInt
+      );
+    } catch (estimateError: any) {
+      const revertReason = estimateError.reason || 
+                          estimateError.data?.message || 
+                          estimateError.message || 
+                          "Unknown error";
+      console.error(`Settlement gas estimation failed for nonce ${exec.nonce}:`, revertReason);
+      console.error(`   Nonce: ${exec.nonce}`);
+      console.error(`   PnL: ${pnlUsd}`);
+      console.error(`   Assets: ${newAssets}`);
+      console.error(`   Exposure: ${exposureUsdInt}`);
+      throw new Error(`Gas estimation failed: ${revertReason}`);
+    }
+
+    const tx = await executor.settleTrade(
+      exec.nonce,
+      pnlUsd,
+      newAssets,
+      exposureUsdInt
+    );
+
+    await tx.wait();
+    markSettled(exec.nonce);
+    console.log(`Settled nonce: ${exec.nonce} | PnL: ${pnlUsd} | Assets: ${newAssets}`);
+  } catch (error: any) {
+    const errorMsg = error.reason || error.data?.message || error.message || "Unknown error";
+    console.error(`Settlement failed for nonce ${exec.nonce}:`, errorMsg);
+    return;
+  }
+}
 
 async function main() {
   const provider = new JsonRpcProvider(RPC, CHAIN_ID);
@@ -116,13 +276,76 @@ async function main() {
 
   const executor = new Contract(
     EXECUTOR_ADDRESS,
-    ["function settleTrade(uint256,int256,uint256,uint256)"],
+    [
+      "function settleTrade(uint256,int256,uint256,uint256)",
+      "function signer() view returns (address)",
+      "function adapter() view returns (address)",
+      "function riskManager() view returns (address)"
+    ],
     bot
   );
 
+  try {
+    const executorSigner = await executor.signer();
+    if (executorSigner.toLowerCase() !== bot.address.toLowerCase()) {
+      throw new Error(
+        `Bot address mismatch!\n` +
+        `   Bot address: ${bot.address}\n` +
+        `   Executor signer: ${executorSigner}\n` +
+        `   Update executor signer or use correct BOT_SIGNER_PRIVATE_KEY`
+      );
+    }
+    console.log("Bot signer verified:", bot.address);
+    
+    const adapterAddress = await executor.adapter();
+    if (adapterAddress === "0x0000000000000000000000000000000000000000") {
+      throw new Error("Executor adapter is not set!");
+    }
+    console.log("Executor adapter verified:", adapterAddress);
+    
+    const riskManagerAddress = await executor.riskManager();
+    const riskManager = new Contract(
+      riskManagerAddress,
+      [
+        "function settlementAdapter() view returns (address)",
+        "function tradingPaused() view returns (bool)"
+      ],
+      bot
+    );
+    
+    const settlementAdapter = await riskManager.settlementAdapter();
+    if (settlementAdapter === "0x0000000000000000000000000000000000000000") {
+      throw new Error(
+        `RiskManager settlementAdapter is not set!\n` +
+        `   Call riskManager.setSettlementAdapter(${adapterAddress})`
+      );
+    }
+    
+    if (settlementAdapter.toLowerCase() !== adapterAddress.toLowerCase()) {
+      throw new Error(
+        `RiskManager settlementAdapter mismatch!\n` +
+        `   RiskManager expects: ${settlementAdapter}\n` +
+        `   Executor adapter: ${adapterAddress}\n` +
+        `   Call riskManager.setSettlementAdapter(${adapterAddress})`
+      );
+    }
+    console.log("RiskManager settlementAdapter verified:", settlementAdapter);
+    
+    const isPaused = await riskManager.tradingPaused();
+    if (isPaused) {
+      console.warn("Trading is PAUSED in RiskManager - settlements may fail");
+    }
+  } catch (error: any) {
+    if (error.message.includes("Bot address mismatch") || 
+        error.message.includes("adapter is not set") ||
+        error.message.includes("settlementAdapter")) {
+      throw error;
+    }
+    console.warn("Could not verify contract configuration:", error.message);
+  }
+
   const trader = HYPERLIQUID_TRADER || bot.address.toLowerCase();
 
-  // Bootstrap: fetch initial state (no longer track previousAssets)
   const initialState = await fetchUserState(trader);
   const initialAssets = Math.floor(extractAccountValue(initialState));
 
@@ -131,13 +354,14 @@ async function main() {
   }
 
   console.log("Bot started");
+  console.log("Market:", MARKET_TICKER);
   console.log("Initial assets:", initialAssets);
 
   const pending = loadUnsettled();
   if (pending.length > 0) {
-    console.log("Recovering pending executions:");
-    for (const row of pending) {
-      console.log(`↪ nonce ${row.nonce} ↔ order ${row.orderId}`);
+    console.log(`Recovering ${pending.length} pending executions:`);
+    for (const exec of pending) {
+      console.log(`  nonce ${exec.nonce} | status: ${exec.status} | filled: ${exec.filledUsd.toFixed(2)}/${exec.targetUsd.toFixed(2)} | orders: ${exec.orderIds.join(", ")}`);
     }
   }
 
@@ -160,23 +384,30 @@ async function main() {
         const nonceStr = nonce.toString();
 
         if (isSettled(nonceStr)) {
-          console.log("already settled:", nonceStr);
+          console.log("Already settled:", nonceStr);
+          continue;
+        }
+
+        const existing = getExecution(nonceStr);
+        if (existing) {
+          console.log(`Intent ${nonceStr} already tracked, will process in recovery loop`);
           continue;
         }
 
         console.log("Intent detected | nonce:", nonceStr);
 
+        saveExecution({
+          nonce: nonceStr,
+          targetUsd: ORDER_SIZE_USD,
+          filledUsd: 0,
+          status: "OPEN",
+          orderIds: [],
+          lastFillCheck: Date.now(),
+        });
 
         const preTradeState = await fetchUserState(trader);
         const equityUsd = extractAccountValue(preTradeState);
         const currentExposureUsd = extractExposure(preTradeState);
-
-        console.log("Pre-trade state:", {
-          equity: equityUsd,
-          exposure: currentExposureUsd,
-          leverage: (currentExposureUsd / equityUsd).toFixed(2) + "x",
-          targetLeverage: TARGET_LEVERAGE + "x",
-        });
 
         const safeSizeUsd = computeSafeOrderSizeUsd({
           requestedSizeUsd: ORDER_SIZE_USD,
@@ -187,6 +418,7 @@ async function main() {
 
         if (safeSizeUsd < 10) {
           console.log("Order skipped — insufficient capacity", {
+            nonce: nonceStr,
             equityUsd,
             currentExposureUsd,
             safeSizeUsd,
@@ -196,106 +428,42 @@ async function main() {
         }
 
         console.log("Venue-safe order size:", {
+          nonce: nonceStr,
           requested: ORDER_SIZE_USD,
           safe: safeSizeUsd.toFixed(2),
           utilizationPct: ((safeSizeUsd / ORDER_SIZE_USD) * 100).toFixed(1) + "%",
         });
 
-        // ---------------- EXECUTION ----------------
-
-        let orderId: number;
         try {
-          const result = await placePerpOrder(
-            HYPERLIQUID_API_KEY,
-            {
-              market: "AVAX-PERP",
-              isBuy: true,
-              sizeUsd: safeSizeUsd,
-              maxSlippageBps: ORDER_MAX_SLIPPAGE_BPS,
-              orderType: ORDER_TYPE,
-            }
-          );
-          orderId = result.orderId;
+          const result = await placePerpOrder(HYPERLIQUID_API_KEY, {
+            market: MARKET_TICKER,
+            isBuy: true,
+            sizeUsd: safeSizeUsd,
+            maxSlippageBps: ORDER_MAX_SLIPPAGE_BPS,
+            orderType: ORDER_TYPE,
+          });
+
+          updateExecution(nonceStr, {
+            orderIds: [result.orderId],
+            status: "OPEN",
+          });
+
+          console.log(`Order placed for nonce ${nonceStr}: orderId ${result.orderId}`);
         } catch (error: any) {
-          // Handle order placement failures gracefully
-          if (error.message?.includes("could not immediately match")) {
-            console.log("⚠️ Order rejected - no immediate fill available.");
-            console.log("   Using IOC orders. Try setting HYPER_ORDER_TYPE=Gtc for resting orders.");
-          } else if (error.message?.includes("Insufficient margin")) {
-            console.log("⚠️ Order rejected - insufficient margin.");
-          } else {
-            console.error("❌ Order placement failed:", error.message);
-          }
-          // Skip settlement for this intent and continue to next
-          continue;
+          console.error(`Order placement failed for nonce ${nonceStr}:`, error.message);
         }
-
-        saveExecution(nonceStr, orderId);
-        console.log(`persisted nonce ${nonceStr} ↔ order ${orderId}`);
-
-        // ---------------- FILL-BASED SETTLEMENT ----------------
-
-        // Wait a moment for fills to be reported (Hyperliquid usually processes fills within 1-2 seconds)
-        await new Promise(r => setTimeout(r, 2000));
-
-        // Fetch all fills for this trader
-        const allFills = await fetchUserFills(trader);
-
-        // Aggregate fills for THIS order only
-        const { filledSizeUsd, realizedPnl, fillCount } = aggregateFills(orderId, allFills);
-
-        if (fillCount === 0) {
-          console.log("⏳ Order not filled yet, skipping settlement for now");
-          continue;
-        }
-
-        console.log("📊 Fill summary:", {
-          orderId,
-          fillCount,
-          filledSizeUsd: filledSizeUsd.toFixed(2),
-          realizedPnl: realizedPnl.toFixed(2),
-        });
-
-        // ---------------- RECONCILIATION ----------------
-
-        // Fetch fresh state for authoritative values
-        const state = await fetchUserState(trader);
-
-        const newAssets = Math.floor(extractAccountValue(state));
-        if (!Number.isFinite(newAssets)) {
-          console.warn("invalid account value, skipping settlement");
-          continue;
-        }
-
-        // Use totalNtlPos as authoritative exposure (matches venue exactly)
-        const exposureUsd = extractExposure(state);
-
-        // Use fill-based PnL (not equity delta)
-        const pnlUsd = Math.floor(realizedPnl);
-        const exposureUsdInt = Math.floor(exposureUsd);
-
-        console.log("Settlement data:", {
-          pnl: pnlUsd,
-          assets: newAssets,
-          exposure: exposureUsdInt,
-        });
-
-        // ---------------- SETTLEMENT ----------------
-
-        const tx = await executor.settleTrade(
-          nonce,
-          pnlUsd,
-          newAssets,
-          exposureUsdInt
-        );
-
-        await tx.wait();
-
-        markSettled(nonceStr);
-        console.log("✅ Settled nonce:", nonceStr, "| PnL:", pnlUsd, "| Assets:", newAssets);
       }
 
       lastBlock = latest;
+    }
+
+    const unsettled = loadUnsettled();
+    for (const exec of unsettled) {
+      try {
+        await processExecution(exec, executor, trader);
+      } catch (error: any) {
+        console.error(`Error processing nonce ${exec.nonce}:`, error.message);
+      }
     }
 
     await new Promise((r) => setTimeout(r, 2000));
