@@ -26,6 +26,7 @@ contract Executor is Ownable {
     event IntentExecuted(uint256 indexed nonce);
     event SignerUpdated(address indexed newSigner);
     event AdapterUpdated(address indexed newAdapter);
+    event EmergencyUnwindTriggered(uint256 exposureUsd);
 
     constructor(
         address _riskManager,
@@ -124,5 +125,10 @@ contract Executor is Ownable {
             newAssets,
             newExposureUsd
         );
+    }
+
+    function emergencyUnwind() external onlyOwner {
+        riskManager.pauseTrading(true);
+        emit EmergencyUnwindTriggered(riskManager.currentExposureUsd());
     }
 }

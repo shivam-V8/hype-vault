@@ -43,7 +43,7 @@ const extractAccountValue = (state: any): number =>
   );
 
 const extractExposure = (state: any): number =>
-  Math.abs(
+    Math.abs(
     toNumber(
       state?.crossMarginSummary?.totalNtlPos ??
       (state.assetPositions ?? []).reduce(
@@ -124,8 +124,66 @@ function hasFillsStabilized(exec: ExecutionRow): boolean {
   return timeSinceLastCheck >= SETTLEMENT_STABILITY_MS;
 }
 
+async function forceUnwindAll(trader: string): Promise<void> {
+  console.log("EMERGENCY UNWIND INITIATED");
+
+  let maxIterations = 10;
+  let iteration = 0;
+
+  while (iteration < maxIterations) {
+    const state = await fetchUserState(trader);
+    const positions = state.assetPositions ?? [];
+    
+    let hasOpenPositions = false;
+
+    for (const pos of positions) {
+      const positionValue = Math.abs(Number(pos.position?.positionValue ?? 0));
+      if (positionValue < 5) continue;
+
+      hasOpenPositions = true;
+      const isLong = Number(pos.position?.szi ?? 0) > 0;
+      const coin = pos.position?.coin ?? "";
+
+      console.log("Closing position", {
+        asset: coin,
+        sizeUsd: positionValue.toFixed(2),
+        side: isLong ? "SELL" : "BUY",
+      });
+
+      try {
+        await placePerpOrder(HYPERLIQUID_API_KEY, {
+          market: `${coin}-PERP`,
+          isBuy: !isLong,
+          sizeUsd: positionValue,
+          reduceOnly: true,
+          maxSlippageBps: 300,
+          orderType: "Ioc",
+        });
+        console.log(`Emergency close order placed for ${coin}`);
+      } catch (error: any) {
+        console.error(`Emergency close failed for ${coin}:`, error.message);
+      }
+    }
+
+    if (!hasOpenPositions) {
+      console.log("All positions closed");
+      break;
+    }
+
+    iteration++;
+    if (iteration < maxIterations) {
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
+  if (iteration >= maxIterations) {
+    console.warn("Emergency unwind reached max iterations - some positions may remain");
+  }
+}
+
 const executorIface = new Interface([
   "event IntentExecuted(uint256 indexed nonce)",
+  "event EmergencyUnwindTriggered(uint256 exposureUsd)",
 ]);
 
 async function processExecution(
@@ -316,7 +374,8 @@ async function main() {
       "function settleTrade(uint256,int256,uint256,uint256)",
       "function signer() view returns (address)",
       "function adapter() view returns (address)",
-      "function riskManager() view returns (address)"
+      "function riskManager() view returns (address)",
+      "event EmergencyUnwindTriggered(uint256 exposureUsd)"
     ],
     bot
   );
@@ -366,11 +425,6 @@ async function main() {
       );
     }
     console.log("RiskManager settlementAdapter verified:", settlementAdapter);
-    
-    const isPaused = await riskManager.tradingPaused();
-    if (isPaused) {
-      console.warn("Trading is PAUSED in RiskManager - settlements may fail");
-    }
   } catch (error: any) {
     if (error.message.includes("Bot address mismatch") || 
         error.message.includes("adapter is not set") ||
@@ -412,10 +466,23 @@ async function main() {
         address: EXECUTOR_ADDRESS,
         fromBlock: lastBlock + 1,
         toBlock: latest,
-        topics: [executorIface.getEvent("IntentExecuted").topicHash],
       });
 
-      for (const log of logs) {
+      const intentLogs = logs.filter(log => 
+        log.topics[0] === executorIface.getEvent("IntentExecuted").topicHash
+      );
+
+      const emergencyLogs = logs.filter(log =>
+        log.topics[0] === executorIface.getEvent("EmergencyUnwindTriggered").topicHash
+      );
+
+      for (const log of emergencyLogs) {
+        const { exposureUsd } = executorIface.parseLog(log).args;
+        console.log(`Emergency unwind triggered | exposure: ${exposureUsd.toString()}`);
+        await forceUnwindAll(trader);
+      }
+
+      for (const log of intentLogs) {
         const { nonce } = executorIface.parseLog(log).args;
         const nonceStr = nonce.toString();
 
@@ -474,10 +541,10 @@ async function main() {
         try {
           const result = await placePerpOrder(HYPERLIQUID_API_KEY, {
             market: MARKET_TICKER,
-            isBuy: true,
-            sizeUsd: safeSizeUsd,
-            maxSlippageBps: ORDER_MAX_SLIPPAGE_BPS,
-            orderType: ORDER_TYPE,
+              isBuy: true,
+              sizeUsd: safeSizeUsd,
+              maxSlippageBps: ORDER_MAX_SLIPPAGE_BPS,
+              orderType: ORDER_TYPE,
           });
 
           updateExecution(nonceStr, {
@@ -494,12 +561,25 @@ async function main() {
       lastBlock = latest;
     }
 
-    const unsettled = loadUnsettled();
-    for (const exec of unsettled) {
-      try {
-        await processExecution(exec, executor, trader);
-      } catch (error: any) {
-        console.error(`Error processing nonce ${exec.nonce}:`, error.message);
+    const riskManagerAddress = await executor.riskManager();
+    const riskManagerCheck = new Contract(
+      riskManagerAddress,
+      ["function tradingPaused() view returns (bool)"],
+      bot
+    );
+
+    const isPaused = await riskManagerCheck.tradingPaused();
+    if (isPaused) {
+      console.warn("Trading paused detected - initiating emergency unwind");
+      await forceUnwindAll(trader);
+    } else {
+      const unsettled = loadUnsettled();
+      for (const exec of unsettled) {
+        try {
+          await processExecution(exec, executor, trader);
+        } catch (error: any) {
+          console.error(`Error processing nonce ${exec.nonce}:`, error.message);
+        }
       }
     }
 
