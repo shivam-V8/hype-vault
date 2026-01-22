@@ -3,14 +3,14 @@ import path from "path";
 import Database from "better-sqlite3";
 import { NextResponse } from "next/server";
 
+import { BOT_CONFIG, CHAIN_CONFIG } from "@/lib/config";
 import { publicClient } from "@/lib/chain/config";
 import {
-  EXECUTOR_ADDRESS,
-  VAULT_ADDRESS,
   executorAbi,
   formatAssetAmount,
   vaultAbi,
 } from "@/lib/chain/contracts";
+import type { ExecutionRow, ExecutionStatus } from "@/lib/types/bot";
 
 type ActivityEvent = {
   type: "deposit" | "withdraw" | "intent";
@@ -22,17 +22,6 @@ type ActivityEvent = {
   blockNumber: number;
 };
 
-type ExecutionRow = {
-  nonce: string;
-  status: string;
-  targetUsd: number;
-  tradePnlUsd: number;
-  fundingUsd: number;
-  feesUsd: number;
-  netPnlUsd: number;
-  createdAt: number;
-};
-
 export async function GET() {
   const events: ActivityEvent[] = [];
 
@@ -41,12 +30,12 @@ export async function GET() {
     const fromBlock = Math.max(latestBlock - 5000, 0);
 
     const vaultLogs = await publicClient.getLogs({
-      address: VAULT_ADDRESS,
+      address: CHAIN_CONFIG.VAULT_ADDRESS,
       fromBlock,
       toBlock: latestBlock,
     });
     const executorLogs = await publicClient.getLogs({
-      address: EXECUTOR_ADDRESS,
+      address: CHAIN_CONFIG.EXECUTOR_ADDRESS,
       fromBlock,
       toBlock: latestBlock,
     });
@@ -116,24 +105,49 @@ export async function GET() {
 
   let executions: ExecutionRow[] = [];
   try {
-    const dbPath = path.join(process.cwd(), "bot.db");
+    function getDbPath(): string {
+      if (path.isAbsolute(BOT_CONFIG.DB_PATH)) {
+        return BOT_CONFIG.DB_PATH;
+      }
+      return path.join(process.cwd(), BOT_CONFIG.DB_PATH);
+    }
+
+    const dbPath = getDbPath();
     const db = new Database(dbPath, { readonly: true });
     const rows = db
       .prepare(
-        `SELECT nonce, status, target_usd as targetUsd, trade_pnl_usd as tradePnlUsd, funding_usd as fundingUsd, fees_usd as feesUsd, net_pnl_usd as netPnlUsd, created_at as createdAt FROM executions ORDER BY created_at DESC LIMIT 10`
+        `SELECT nonce, status, target_usd as targetUsd, filled_usd as filledUsd, order_ids as orderIds, trade_pnl_usd as tradePnlUsd, funding_usd as fundingUsd, fees_usd as feesUsd, net_pnl_usd as netPnlUsd, created_at as createdAt FROM executions ORDER BY created_at DESC LIMIT 20`
       )
-      .all<ExecutionRow>();
+      .all() as Array<{
+      nonce: string;
+      status: string;
+      targetUsd: number;
+      filledUsd: number;
+      orderIds: string;
+      tradePnlUsd: number;
+      fundingUsd: number;
+      feesUsd: number;
+      netPnlUsd: number;
+      createdAt: number;
+    }>;
 
     executions = rows.map((row) => ({
       nonce: row.nonce,
-      status: row.status,
       targetUsd: row.targetUsd,
-      tradePnlUsd: row.tradePnlUsd,
-      fundingUsd: row.fundingUsd,
-      feesUsd: row.feesUsd,
-      netPnlUsd: row.netPnlUsd,
+      filledUsd: row.filledUsd,
+      status: row.status as ExecutionStatus,
+      orderIds: JSON.parse(row.orderIds || "[]") as number[],
+      tradePnlUsd: row.tradePnlUsd ?? 0,
+      fundingUsd: row.fundingUsd ?? 0,
+      feesUsd: row.feesUsd ?? 0,
+      netPnlUsd: row.netPnlUsd ?? 0,
+      prevStateSnapshot: null,
+      lastFillCheck: 0,
+      settled: 0,
       createdAt: row.createdAt,
     }));
+
+    db.close();
   } catch (error: unknown) {
     console.warn("Unable to read bot.db executions:", error);
     executions = [];

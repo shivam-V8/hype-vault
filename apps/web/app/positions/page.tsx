@@ -1,16 +1,27 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 
 import { useHyperliquidSnapshot } from "@/lib/hooks/useHyperliquidSnapshot";
+import { useBotExecutions } from "@/lib/hooks/useBotExecutions";
 import { formatUsd } from "@/lib/utils/format";
 
 export default function PositionsPage() {
   const snapshot = useHyperliquidSnapshot();
+  const { executions: activeExecutions } = useBotExecutions({
+    status: undefined,
+    limit: 10,
+  });
 
   const positions = useMemo(
     () => snapshot.state?.assetPositions ?? [],
     [snapshot.state]
+  );
+
+  const recentExecutions = useMemo(
+    () => activeExecutions.filter((e) => e.status !== "SETTLED").slice(0, 5),
+    [activeExecutions]
   );
 
   const lastUpdated = snapshot.lastUpdated
@@ -71,12 +82,55 @@ export default function PositionsPage() {
         )}
       </section>
 
+      {recentExecutions.length > 0 && (
+        <section className="rounded-3xl border border-white/10 bg-slate-900/60 p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-white">
+              Recent Active Executions
+            </h2>
+            <Link
+              href="/activity"
+              className="text-xs uppercase tracking-[0.3em] text-cyan-400 hover:text-cyan-300"
+            >
+              View All →
+            </Link>
+          </div>
+          <p className="mt-2 text-xs text-slate-400">
+            These executions may have contributed to the positions above
+          </p>
+          <div className="mt-4 space-y-2">
+            {recentExecutions.map((exec) => (
+              <Link
+                key={exec.nonce}
+                href={`/executions/${exec.nonce}`}
+                className="flex items-center justify-between rounded-xl border border-white/5 bg-slate-950/80 px-4 py-2 text-xs transition hover:bg-white/5"
+              >
+                <span className="font-mono text-cyan-400">
+                  {exec.nonce.slice(0, 12)}...
+                </span>
+                <span className="text-slate-400">
+                  {exec.status} · {formatUsd(exec.filledUsd)}/{formatUsd(exec.targetUsd)}
+                </span>
+                <span
+                  className={
+                    exec.netPnlUsd >= 0 ? "text-emerald-300" : "text-rose-300"
+                  }
+                >
+                  {formatUsd(exec.netPnlUsd)}
+                </span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 text-sm text-slate-300">
         <h2 className="text-base font-semibold text-white">Why this matters</h2>
         <p className="mt-2">
           The vault operator funnels Hyperliquid fills back into the RiskManager,
           and this page lets you verify directional bets, open exposure, and
-          unrealized PnL without needing trading access.
+          unrealized PnL without needing trading access. Active executions above
+          show which bot orders may have created these positions.
         </p>
       </section>
     </div>

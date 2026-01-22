@@ -6,19 +6,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { metaMask, walletConnect } from "@wagmi/connectors";
 
 import { chains, publicClient } from "@/lib/chain/config";
-
-const walletConnectProjectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID;
+import { WALLET_CONFIG } from "@/lib/config";
 
 const queryClient = new QueryClient();
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const config = useMemo(() => {
     const connectors = [metaMask({ chains })];
-    if (walletConnectProjectId) {
+    if (WALLET_CONFIG.WALLETCONNECT_PROJECT_ID) {
       connectors.push(
         walletConnect({
           chains,
-          projectId: walletConnectProjectId,
+          projectId: WALLET_CONFIG.WALLETCONNECT_PROJECT_ID,
         })
       );
     }

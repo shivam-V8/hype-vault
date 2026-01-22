@@ -1,9 +1,26 @@
 "use client";
 
-import { format } from "date-fns";
+import Link from "next/link";
 
 import { useVaultActivity } from "@/lib/hooks/useVaultActivity";
 import { formatUsd } from "@/lib/utils/format";
+import type { ExecutionStatus } from "@/lib/types/bot";
+
+function StatusBadge({ status }: { status: ExecutionStatus }) {
+  const colors = {
+    OPEN: "bg-blue-500/80 text-white",
+    PARTIAL: "bg-yellow-500/80 text-slate-950",
+    FILLED: "bg-purple-500/80 text-white",
+    SETTLED: "bg-emerald-500/80 text-slate-950",
+  };
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${colors[status]}`}
+    >
+      {status}
+    </span>
+  );
+}
 
 export default function ActivityPage() {
   const { data, loading, error } = useVaultActivity();
@@ -63,44 +80,80 @@ export default function ActivityPage() {
       </section>
 
       <section className="rounded-3xl border border-white/10 bg-slate-900/60 p-6">
-        <h2 className="text-lg font-semibold text-white">Executions</h2>
+        <h2 className="text-lg font-semibold text-white">Bot Executions</h2>
         {data.executions.length === 0 ? (
           <p className="mt-4 text-sm text-slate-300">
-            No executions have been recorded in `bot.db` yet.
+            No executions have been recorded in bot.db yet.
           </p>
         ) : (
-          <div className="mt-4 grid gap-3 text-sm">
-            {data.executions.map((exec) => (
-              <div
-                key={exec.nonce}
-                className="rounded-2xl border border-white/5 bg-slate-950/80 p-4"
-              >
-                <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-slate-400">
-                  <span>Nonce {exec.nonce}</span>
-                  <span>
-                    {format(new Date(exec.createdAt), "yyyy-MM-dd HH:mm:ss")}
-                  </span>
-                </div>
-                <p className="mt-2 text-sm text-white">
-                  Status: {exec.status}
-                </p>
-                <p className="text-slate-400">
-                  Target USD: {formatUsd(exec.targetUsd)}
-                </p>
-                <p className="text-slate-400">
-                  Trade PnL: {formatUsd(exec.tradePnlUsd)}
-                </p>
-                <p className="text-slate-400">
-                  Funding: {formatUsd(exec.fundingUsd)}
-                </p>
-                <p className="text-slate-400">
-                  Fees: {formatUsd(exec.feesUsd)}
-                </p>
-                <p className="text-slate-400">
-                  Net PnL: {formatUsd(exec.netPnlUsd)}
-                </p>
-              </div>
-            ))}
+          <div className="mt-4 overflow-hidden rounded-2xl border border-white/5">
+            <div className="grid grid-cols-8 gap-4 border-b border-white/5 bg-slate-950/70 px-4 py-3 text-xs uppercase tracking-[0.3em] text-slate-400">
+              <span>Nonce</span>
+              <span>Status</span>
+              <span>Target</span>
+              <span>Filled</span>
+              <span>Trade PnL</span>
+              <span>Funding</span>
+              <span>Fees</span>
+              <span>Net PnL</span>
+            </div>
+            <div>
+              {data.executions.map((exec) => {
+                const fillProgress =
+                  exec.targetUsd > 0
+                    ? (exec.filledUsd / exec.targetUsd) * 100
+                    : 0;
+                return (
+                  <Link
+                    key={exec.nonce}
+                    href={`/executions/${exec.nonce}`}
+                    className="grid grid-cols-8 gap-4 border-b border-white/5 px-4 py-3 text-sm text-slate-200 transition hover:bg-white/5 last:border-0"
+                  >
+                    <span className="font-mono text-xs text-cyan-400">
+                      {exec.nonce.slice(0, 8)}...
+                    </span>
+                    <StatusBadge status={exec.status as ExecutionStatus} />
+                    <span>{formatUsd(exec.targetUsd)}</span>
+                    <span className="text-xs">
+                      {formatUsd(exec.filledUsd)}
+                      <span className="ml-1 text-slate-500">
+                        ({fillProgress.toFixed(0)}%)
+                      </span>
+                    </span>
+                    <span
+                      className={
+                        exec.tradePnlUsd >= 0
+                          ? "text-emerald-300"
+                          : "text-rose-300"
+                      }
+                    >
+                      {formatUsd(exec.tradePnlUsd)}
+                    </span>
+                    <span
+                      className={
+                        exec.fundingUsd >= 0
+                          ? "text-emerald-300"
+                          : "text-rose-300"
+                      }
+                    >
+                      {formatUsd(exec.fundingUsd)}
+                    </span>
+                    <span className="text-rose-300">
+                      {formatUsd(exec.feesUsd)}
+                    </span>
+                    <span
+                      className={
+                        exec.netPnlUsd >= 0
+                          ? "text-emerald-300 font-semibold"
+                          : "text-rose-300 font-semibold"
+                      }
+                    >
+                      {formatUsd(exec.netPnlUsd)}
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
           </div>
         )}
       </section>

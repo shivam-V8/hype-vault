@@ -2,36 +2,17 @@ import type { Abi, Address } from "viem";
 import { parseUnits } from "viem";
 import { useReadContract, useReadContracts } from "wagmi";
 
+import { CHAIN_CONFIG } from "@/lib/config";
+
 import VaultArtifact from "../../../../artifacts/contracts/Vault.sol/Vault.json";
 import RiskManagerArtifact from "../../../../artifacts/contracts/RiskManager.sol/RiskManager.json";
 import ExecutorArtifact from "../../../../artifacts/contracts/Executor.sol/Executor.json";
 
-const normalizeAddress = (value: string | undefined, fallback: string) =>
-  (value ?? fallback).toLowerCase() as Address;
-
-export const VAULT_ADDRESS = normalizeAddress(
-  process.env.NEXT_PUBLIC_VAULT_ADDRESS,
-  "0x0000000000000000000000000000000000000000"
-);
-
-export const RISK_MANAGER_ADDRESS = normalizeAddress(
-  process.env.NEXT_PUBLIC_RISK_MANAGER_ADDRESS,
-  "0x0000000000000000000000000000000000000000"
-);
-
-export const EXECUTOR_ADDRESS = normalizeAddress(
-  process.env.NEXT_PUBLIC_EXECUTOR_ADDRESS,
-  "0x0000000000000000000000000000000000000000"
-);
-
-export const USDC_ADDRESS = normalizeAddress(
-  process.env.NEXT_PUBLIC_USDC_ADDRESS,
-  "0x0000000000000000000000000000000000000000"
-);
-
-export const ASSET_DECIMALS = Number(
-  process.env.NEXT_PUBLIC_ASSET_DECIMALS ?? 6
-);
+export const VAULT_ADDRESS = CHAIN_CONFIG.VAULT_ADDRESS;
+export const RISK_MANAGER_ADDRESS = CHAIN_CONFIG.RISK_MANAGER_ADDRESS;
+export const EXECUTOR_ADDRESS = CHAIN_CONFIG.EXECUTOR_ADDRESS;
+export const USDC_ADDRESS = CHAIN_CONFIG.USDC_ADDRESS;
+export const ASSET_DECIMALS = CHAIN_CONFIG.ASSET_DECIMALS;
 
 export const vaultAbi = VaultArtifact.abi as Abi;
 export const riskManagerAbi = RiskManagerArtifact.abi as Abi;

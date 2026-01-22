@@ -10,7 +10,7 @@ export function WalletStatus() {
     connectors,
     connect,
     isLoading: isConnecting,
-    pendingConnector,
+    pendingConnectorId,
   } = useConnect();
   const { disconnect } = useDisconnect();
 
@@ -38,10 +38,10 @@ export function WalletStatus() {
         <button
           key={connector.id}
           className="rounded-full border border-slate-600/60 px-3 py-1 uppercase tracking-wider text-[11px] text-slate-100 transition hover:border-slate-200 disabled:cursor-not-allowed disabled:border-slate-500 disabled:text-slate-500"
-          onClick={() => connect({ connector })}
+          onClick={() => connect({ connectorId: connector.id })}
           disabled={!connector.ready || isConnecting}
         >
-          {isConnecting && pendingConnector?.id === connector.id
+          {isConnecting && pendingConnectorId === connector.id
             ? "Connecting…"
             : connector.name}
         </button>

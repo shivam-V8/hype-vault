@@ -1,10 +1,9 @@
 import { createPublicClient, http } from "viem";
 
-const defaultRpc =
-  process.env.NEXT_PUBLIC_HYPER_EVM_RPC ?? "https://rpc.hyperliquid-testnet.xyz/evm";
+import { CHAIN_CONFIG } from "@/lib/config";
 
 export const hyperEvmChain = {
-  id: Number(process.env.NEXT_PUBLIC_HYPER_EVM_CHAIN_ID ?? 998),
+  id: CHAIN_CONFIG.CHAIN_ID,
   name: "Hyper-EVM Testnet",
   network: "hyper-evm",
   nativeCurrency: {
@@ -14,7 +13,7 @@ export const hyperEvmChain = {
   },
   rpcUrls: {
     default: {
-      http: [defaultRpc],
+      http: [CHAIN_CONFIG.RPC],
     },
   },
   testnet: true,
@@ -24,5 +23,5 @@ export const chains = [hyperEvmChain];
 
 export const publicClient = createPublicClient({
   chain: hyperEvmChain,
-  transport: http(defaultRpc),
+  transport: http(CHAIN_CONFIG.RPC),
 });
